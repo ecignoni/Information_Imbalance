@@ -1,5 +1,3 @@
-
-
 from collections import defaultdict
 import numpy as np
 from scipy.spatial.distance import cdist
@@ -7,42 +5,43 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
-
 # =============================================================================
 # Information Imbalance related functions
 # =============================================================================
 
 
-def _vectorized_information_imbalance(A, B):
-    '''
+def _vectorized_information_imbalance(A, B, metric):
+    """
     All-NumPy version of information imbalance calculation.
-    '''
+    """
     N = A.shape[0]
-    nn_A = np.argsort(cdist(A, A), axis=1)[:,1]
-    r_B = np.argsort(cdist(B, B), axis=1)
-    r_B = [np.where(r==n)[0][0] for r,n in zip(r_B, nn_A)]
+    nn_A = np.argsort(cdist(A, A, metric=metric), axis=1)[:, 1]
+    r_B = np.argsort(cdist(B, B, metric=metric), axis=1)
+    r_B = [np.where(r == n)[0][0] for r, n in zip(r_B, nn_A)]
     cond_r_B = np.sum(r_B)
     imbalance = 2 * cond_r_B / N**2
     return imbalance
 
 
-def _sequential_information_imbalance(A, B):
-    '''
+def _sequential_information_imbalance(A, B, metric):
+    """
     Hybrid Python-NumPy version of information imbalance calculation.
-    '''
+    """
     N = A.shape[0]
     cond_r_B = 0.0
     for p in range(N):
-        nn_A = np.argsort(np.sum((A-A[p])**2, axis=1)**0.5)[1]
-        r_B = np.argsort(np.sum((B-B[p])**2, axis=1)**0.5)
+        A_p = np.atleast_2d(A[p])
+        B_p = np.atleast_2d(B[p])
+        nn_A = np.argsort(cdist(A, A_p, metric=metric), axis=0)[1][0]
+        r_B = np.argsort(cdist(B, B_p, metric=metric), axis=0)
         r_B = np.where(r_B == nn_A)[0][0]
         cond_r_B += r_B
     imbalance = 2 * cond_r_B / N**2
     return imbalance
 
 
-def information_imbalance(A, B, mode='vectorized'):
-    '''
+def information_imbalance(A, B, metric="euclidean", mode="vectorized"):
+    """
     Computes the information imbalance of going from a set of features
     A to a set of features B.
 
@@ -58,6 +57,11 @@ def information_imbalance(A, B, mode='vectorized'):
              First set of features.
     B        : ndarray, (num_samples, num_features_B) or (num_samples,)
              Second set of features
+    metric   : str
+             Metric used to compute the distances. Must be one of the allowed
+             metrics in the `cdist` function of SciPy (the one used to actually
+             compute distances).
+             See: https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.distance.cdist.html
     mode     : str
              How the Information Imbalance is computed.
              * 'vectorized' is faster but needs more memory. If it fails,
@@ -71,28 +75,29 @@ def information_imbalance(A, B, mode='vectorized'):
     References
     ----------
     Glielmo et al., https://arxiv.org/abs/2104.15079
-    '''
+    """
     # Same number of points
     if A.shape[0] != B.shape[0]:
-        raise RuntimeError('Number of points mismatch between A and B.')
+        raise RuntimeError("Number of points mismatch between A and B.")
     # At least 2D
     if len(A.shape) < 2:
-        A = A.reshape(-1,1)
+        A = A.reshape(-1, 1)
     if len(B.shape) < 2:
-        B = B.reshape(-1,1)
+        B = B.reshape(-1, 1)
 
-    if mode == 'sequential':
-        return _sequential_information_imbalance(A, B)
-    elif mode == 'vectorized':
+    if mode == "sequential":
+        return _sequential_information_imbalance(A, B, metric=metric)
+    elif mode == "vectorized":
         try:
-            return _vectorized_information_imbalance(A, B)
+            return _vectorized_information_imbalance(A, B, metric=metric)
         except MemoryError as e:
             print(e)
-            print('Switching to sequential mode...')
-            return _sequential_information_imbalance(A, B)
+            print("Switching to sequential mode...")
+            return _sequential_information_imbalance(A, B, metric)
     else:
-        raise RuntimeError(f'mode {mode} not recognized. Specify "vectorized" or "sequential".')
-
+        raise RuntimeError(
+            f'mode {mode} not recognized. Specify "vectorized" or "sequential".'
+        )
 
 
 # =============================================================================
@@ -105,14 +110,19 @@ def information_imbalance(A, B, mode='vectorized'):
 #       independent task (embarassingly parallel). This is particularly true for
 #       the sequential version, as the vectorized one may incur in memory problems
 #       when multiple processes are active.
-def _feature_selection(features, max_feats=5, mode='vectorized'):
-    '''
+def _feature_selection(features, max_feats=5, metric="euclidean", mode="vectorized"):
+    """
     Arguments
     ---------
     features     : ndarray, (num_samples, num_features)
                  Initial set of features
     max_feats    : int
                  Maximum features to be selected
+    metric       : str
+                 Metric used to compute the distances. Must be one of the allowed
+                 metrics in the `cdist` function of SciPy (the one used to actually
+                 compute distances).
+                 See: https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.distance.cdist.html
     mode         : str
                  How the Information Imbalance is computed.
                  * 'vectorized' is faster but needs more memory. If it fails,
@@ -131,7 +141,7 @@ def _feature_selection(features, max_feats=5, mode='vectorized'):
                                    --- 1 --- 'A_B' : values
                                              'B_A' : values
                                    ...
-    '''
+    """
     # Helpers: selected columns will be deleted from these arrays
     subfeatures = features.copy()
     featindices = np.arange(features.shape[1])
@@ -142,31 +152,33 @@ def _feature_selection(features, max_feats=5, mode='vectorized'):
     # Iterate over the number of features to be selected
     for m in range(max_feats):
         imbalances[m] = defaultdict(list)
-        iterator = tqdm(range(features.shape[1]-m), desc=f'Subset d={m+1}')
+        iterator = tqdm(range(features.shape[1] - m), desc=f"Subset d={m+1}")
         for i in iterator:
             if selected is None:
-                subset = subfeatures[:,i]
+                subset = subfeatures[:, i]
             else:
-                subset = np.c_[selected, subfeatures[:,i]]
-            A_B = information_imbalance(subset, features, mode=mode)
-            B_A = information_imbalance(features, subset, mode=mode)
-            imbalances[m]['A_B'].append(A_B)
-            imbalances[m]['B_A'].append(B_A)
+                subset = np.c_[selected, subfeatures[:, i]]
+            A_B = information_imbalance(subset, features, metric=metric, mode=mode)
+            B_A = information_imbalance(features, subset, metric=metric, mode=mode)
+            imbalances[m]["A_B"].append(A_B)
+            imbalances[m]["B_A"].append(B_A)
         # Most informative feature for going from A to B
-        f = np.argmin(imbalances[m]['A_B'])
+        f = np.argmin(imbalances[m]["A_B"])
         selected_indices.append(featindices[f])
         if selected is None:
-            selected = subfeatures[:,f]
+            selected = subfeatures[:, f]
         else:
-            selected = np.c_[selected, subfeatures[:,f]]
+            selected = np.c_[selected, subfeatures[:, f]]
         # Delete the corresponding entry
         subfeatures = np.delete(subfeatures, f, axis=1)
         featindices = np.delete(featindices, f)
     return selected_indices, imbalances
 
 
-def feature_selection(features_dict, max_feats=5, mode='vectorized'):
-    '''
+def feature_selection(
+    features_dict, max_feats=5, metric="euclidean", mode="vectorized"
+):
+    """
     Performs a greedy feature selection as described in Glielmo et al. [1]
     The feature selection is based on the information imbalance criterion.
     Arguments
@@ -176,6 +188,11 @@ def feature_selection(features_dict, max_feats=5, mode='vectorized'):
                   Dictionary with key=feature_name and value=feature_values
     max_feats     : int
                   Maximum features to be selected
+    metric        : str
+                  Metric used to compute the distances. Must be one of the allowed
+                  metrics in the `cdist` function of SciPy (the one used to actually
+                  compute distances).
+                  See: https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.distance.cdist.html
     mode          : str
                   How the Information Imbalance is computed.
                   * 'vectorized' is faster but needs more memory. If it fails,
@@ -194,13 +211,14 @@ def feature_selection(features_dict, max_feats=5, mode='vectorized'):
                                    --- 1 --- 'A_B' : values
                                              'B_A' : values
                                    ...
-    '''
+    """
     feat_names = np.asarray(list(features_dict.keys()))
     features = np.asarray([v for v in features_dict.values()]).T
-    selected_indices, imbalances = _feature_selection(features, max_feats=max_feats, mode=mode)
+    selected_indices, imbalances = _feature_selection(
+        features, max_feats=max_feats, metric=metric, mode=mode
+    )
     selected_features = feat_names[np.asarray(selected_indices)]
     return selected_features, imbalances
-
 
 
 # =============================================================================
@@ -218,7 +236,7 @@ def set_equalaxes(ax):
 
 
 def plot_imbalances(imbalances, logplot=False):
-    '''
+    """
     Information Imbalance Plane plot, see [1].
     Arguments
     ---------
@@ -234,19 +252,23 @@ def plot_imbalances(imbalances, logplot=False):
     -------
     fig    : matplotlib.figure.Figure
     ax     : matplotlib.axes._subplots.AxesSubplot
-    '''
-    fig, ax = plt.subplots(1, 1, figsize=(4,4), dpi=150)
-    ax.grid(which='both', lw=0.2)
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(4, 4), dpi=150)
+    ax.grid(which="both", lw=0.2)
     if logplot:
         ax.loglog()
     for k in imbalances.keys():
-        plt.scatter(imbalances[k]['B_A'], imbalances[k]['A_B'], alpha=0.2, c='C%d'%k, label='d=%d'%(k+1))
-    ax.plot([0,1], [0,1], ls='dashed', c='k', transform=ax.transAxes)
+        plt.scatter(
+            imbalances[k]["B_A"],
+            imbalances[k]["A_B"],
+            alpha=0.2,
+            c="C%d" % k,
+            label="d=%d" % (k + 1),
+        )
+    ax.plot([0, 1], [0, 1], ls="dashed", c="k", transform=ax.transAxes)
     set_equalaxes(ax)
     ax.legend()
     [b.set_linewidth(2) for b in ax.spines.values()]
-    ax.set_xlabel(r'$\Delta(B \rightarrow A)$')
-    ax.set_ylabel(r'$\Delta(A \rightarrow B)$')
+    ax.set_xlabel(r"$\Delta(B \rightarrow A)$")
+    ax.set_ylabel(r"$\Delta(A \rightarrow B)$")
     return fig, ax
-
-
